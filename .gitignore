@@ -1,0 +1,67 @@
+# =========================
+# 1. Environment & Secrets
+# =========================
+# NEVER push your API keys or virtual environments to GitHub
+.env
+medical_rag/
+.venv
+env/
+venv/
+ENV/
+*.secret
+.streamlit/secrets.toml
+
+# =========================
+# 2. Machine Learning Data & Models
+# =========================
+# Exclude raw datasets, large XMLs, and FAISS vector indexes
+data/raw/
+data/processed/
+*.pkl
+*.faiss
+*.bm25
+*.xml
+*.csv
+*.tsv
+*.json
+
+# Exclude PyTorch model weights (these exceed GitHub file limits)
+*.pth
+*.pt
+*.ckpt
+data/models/
+
+# =========================
+# 3. Python Caches & Build Files
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# =========================
+# 4. OS & IDE Specific
+# =========================
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
