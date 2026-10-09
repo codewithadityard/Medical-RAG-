@@ -2,103 +2,105 @@ import os
 import random
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from tqdm import tqdm
 
-# We will import the model we wrote previously
 from gnn import DiagnosticGNN
 
+
 def load_graph_data(device):
-    """Loads the artifacts from Day 1 and Day 2 into PyTorch dictionaries."""
+    """Loads the graph tensors and clinical edge attributes into PyTorch dictionaries."""
     # 1. Load the raw tensors
     hpo_graph = torch.load("data/processed/hpo_pyg_graph.pt")
     bipartite_edges = torch.load("data/processed/disease_hpo_edges.pt")
+    edge_attr = torch.load("data/processed/disease_hpo_edge_attr.pt")
 
-    # 2. Map them to the specific HeteroConv edge names we defined
+    # 2. Map them to the specific HGT edge relations
     edge_index_dict = {
         ('symptom', 'is_a', 'symptom'): hpo_graph.edge_index.to(device),
         ('disease', 'has', 'symptom'): bipartite_edges.to(device),
-        # The crucial reverse edge we discussed (flipping row 0 and 1)
         ('symptom', 'rev_has', 'disease'): bipartite_edges.flip([0]).to(device)
     }
 
-    # Count nodes for the Embedding layers
+    edge_attr_dict = {
+        ('disease', 'has', 'symptom'): edge_attr.to(device)
+    }
+
     num_symptoms = hpo_graph.x.shape[0]
     num_diseases = bipartite_edges[0].max().item() + 1
 
-    return edge_index_dict, num_symptoms, num_diseases, bipartite_edges
+    return edge_index_dict, edge_attr_dict, num_symptoms, num_diseases, bipartite_edges
+
 
 def train():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Training on: {device}")
 
     # Load data
-    edge_index_dict, num_symptoms, num_diseases, bipartite_edges = load_graph_data(device)
+    edge_index_dict, edge_attr_dict, num_symptoms, num_diseases, bipartite_edges = load_graph_data(device)
 
     # Initialize model and optimizer
-    model = DiagnosticGNN(num_diseases, num_symptoms, hidden_dim=512).to(device)
+    model = DiagnosticGNN(num_diseases, num_symptoms, hidden_dim=256).to(device)
     optimizer = optim.Adam(model.parameters(), lr=0.001)
     criterion = nn.CrossEntropyLoss()
 
     # Pre-calculate which symptoms belong to which disease for fast sampling
     disease_to_symptoms = {}
     for d_idx, s_idx in zip(bipartite_edges[0].tolist(), bipartite_edges[1].tolist()):
-        if d_idx not in disease_to_symptoms:
-            disease_to_symptoms[d_idx] = []
-        disease_to_symptoms[d_idx].append(s_idx)
+        disease_to_symptoms.setdefault(d_idx, []).append(s_idx)
 
-    epochs = 50
-    batch_size = 256
+    epochs = 10
+    batch_size = 128
 
+    print(f"Starting Heterogeneous Graph Transformer training ({epochs} epochs)...")
     model.train()
     for epoch in range(epochs):
-        total_loss = 0
-        
-        # 1. Full Graph Forward Pass: Update ALL node embeddings
         optimizer.zero_grad()
-        updated_node_embeddings = model(edge_index_dict)
+        
+        # 1. Full Graph Forward Pass with clinical edge attributes
+        updated_node_embeddings = model(edge_index_dict, edge_attr_dict)
         
         # 2. Synthetic Patient Generation (Batching)
-        # Randomly select a batch of target diseases
         target_diseases = random.choices(list(disease_to_symptoms.keys()), k=batch_size)
         target_tensor = torch.tensor(target_diseases, dtype=torch.long).to(device)
+        d_norm = F.normalize(updated_node_embeddings['disease'], p=2, dim=-1)
 
         batch_scores = []
         for disease_idx in target_diseases:
             true_symptoms = disease_to_symptoms[disease_idx]
             
-            # Simulate a patient by keeping only 40% to 80% of the true symptoms
+            # Simulate realistic patient presentation (keeping 40% to 80% of true symptoms)
             keep_ratio = random.uniform(0.4, 0.8)
             num_to_keep = max(1, int(len(true_symptoms) * keep_ratio))
             patient_symptoms = random.sample(true_symptoms, num_to_keep)
             patient_tensor = torch.tensor(patient_symptoms, dtype=torch.long).to(device)
 
-            # 3. Score this synthetic patient against ALL diseases
-            # (Reusing the predict_diagnosis logic we wrote)
             patient_vecs = updated_node_embeddings['symptom'][patient_tensor]
             patient_profile = patient_vecs.mean(dim=0, keepdim=True)
+            patient_norm = F.normalize(patient_profile, p=2, dim=-1)
             
-            # Dot product against all diseases
-            scores = torch.matmul(patient_profile, updated_node_embeddings['disease'].t())
+            # Temperature-scaled cosine similarity for stable multiclass cross-entropy
+            scores = torch.matmul(patient_norm, d_norm.t()) / 0.05
             batch_scores.append(scores)
 
-        # 4. Calculate Loss and Backpropagate
-        # Stack scores into shape [batch_size, num_diseases]
+        # 3. Calculate Loss and Backpropagate
         logits = torch.cat(batch_scores, dim=0) 
-        
-        # Cross Entropy pushes the score of the target_disease higher than the rest
         loss = criterion(logits, target_tensor)
         loss.backward()
         optimizer.step()
 
-        total_loss += loss.item()
-        
-        if (epoch + 1) % 5 == 0:
-            print(f"Epoch {epoch+1:02d} | Loss: {total_loss:.4f}")
+        top5 = torch.topk(logits, 5, dim=1).indices
+        top1_acc = (top5[:, 0] == target_tensor).float().mean().item() * 100
+        top5_acc = (top5 == target_tensor.unsqueeze(1)).any(dim=1).float().mean().item() * 100
 
-    print("Training complete! Saving model...")
+        print(f"Epoch {epoch+1:02d}/{epochs:02d} | Loss: {loss.item():.4f} | Batch Top-1: {top1_acc:.1f}% | Batch Top-5: {top5_acc:.1f}%")
+
+    print("\nTraining complete! Saving model...")
     os.makedirs("data/models", exist_ok=True)
     torch.save(model.state_dict(), "data/models/gnn_ranker.pth")
+    print("Model saved to data/models/gnn_ranker.pth")
+
 
 if __name__ == "__main__":
     train()

@@ -6,16 +6,18 @@ class MedicalGenerator:
     def generate_clinical_summary(self,symptoms,disease_name,evidence_docs):
 
         client=Groq(api_key=os.environ.get("GROQ_API_KEY"))
-        context="/n/n".join(evidence_docs)
+        context = "\n\n".join(evidence_docs)
 
-        prompt=f"""
+        prompt = f"""
     You are a medical expert. 
-    you are given the list of symptoms :{symptoms} and name of the disease:{disease_name}
-    Medical Literature :{evidence_docs}
-    You need to check if the medical literature is acurate for the given sympotoms and dissease . 
-    I need you to write a well detailed clincal report . But do not make it big . Make it short and concinse .
-    DO not invent any medical fact. only answer from the context and the data you have been given.
-
+    You are given the list of symptoms: {symptoms} and name of the disease: {disease_name}
+    
+    Medical Literature:
+    {context}
+    
+    You need to check if the medical literature is accurate for the given symptoms and disease. 
+    I need you to write a well-detailed clinical report. Make it short, focused, and concise.
+    Do NOT invent any medical facts. Only answer from the context and the data you have been given.
     """
 
         response=client.chat.completions.create(
